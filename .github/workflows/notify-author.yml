@@ -1,18 +1,46 @@
+# Tell the author their post is ready to look at.
+#
+# A reusable workflow. Each blog repo calls it with a two-line caller rather
+# than holding a copy, so a fix lands everywhere at once — the previous
+# arrangement was a hand-copied file per repo, which does not scale past the
+# first site.
+#
+# It runs on the *deployment status* rather than on the pull request, because
+# that is the only point at which the preview URL exists: post-inbox opens the
+# PR before Vercel has built anything, so a notification sent at PR time can
+# only link the PR, not the preview. Waiting means the link works when the
+# author clicks it.
+#
+# Two secrets, set by `pnpm configure:notify` in the post-inbox repo:
+#   RESEND_API_KEY    the Resend credential
+#   AUTHOR_EMAIL_MAP  {"author-name": "address"} — derived from sites.jsonc
+#
+# No email address is ever committed, logged, or written into a PR. The post's
+# frontmatter carries only the author *name*; the address is looked up from the
+# secret at send time and masked in output.
 name: Notify author
 
 on:
   workflow_call:
     inputs:
       content-path:
+        description: Directory holding posts, relative to the repo root.
         type: string
         default: data/blog
       route-prefix:
+        description: URL path the site serves posts under.
         type: string
         default: /blog
       branch-prefix:
+        description: Only notify for branches starting with this.
         type: string
         default: post-inbox/
       mail-from:
+        description: >
+          Sender address, on a domain verified with Resend. Passed in rather than
+          read from `vars`, because a called workflow does not inherit the
+          caller's variables — referencing one here fails the whole run at
+          startup rather than arriving empty.
         type: string
         required: true
     secrets:
@@ -23,11 +51,122 @@ on:
 
 jobs:
   notify:
-    # BISECT STEP: the only thing added back over the probe that loaded cleanly.
+    permissions:
+      contents: read
+      pull-requests: read
+    # Successful preview deployments only.
+    #
+    # Note `deployment.ref` is NOT usable as a branch filter: Vercel sets it to
+    # a commit SHA, so matching it against `post-inbox/` never fires. The branch
+    # has to be resolved from the SHA, which the first step does. Production
+    # deployments are excluded here — those are merges, and the author has
+    # already been told about the preview.
     if: >
       github.event.deployment_status.state == 'success' &&
       github.event.deployment.environment != 'Production'
     runs-on: ubuntu-latest
+
     steps:
-      - name: Bisect probe with the if clause
-        run: echo "loaded and ran with the if clause"
+      # The caller's repo, to read the post.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.deployment.sha }}
+          # Enough history to find which branch this commit belongs to.
+          fetch-depth: 0
+
+      - name: Find the post and its author
+        id: post
+        env:
+          SHA: ${{ github.event.deployment.sha }}
+          CONTENT_PATH: ${{ inputs.content-path }}
+          BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+          # `gh` is preinstalled on the runner but needs a token; the job's
+          # `pull-requests: read` permission covers this lookup.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Which branch is this commit on? Vercel gives us only a SHA, and the
+          # branch name is what tells us post-inbox created this deployment.
+          branch="$(git branch -r --contains "$SHA" --format='%(refname:lstrip=3)' \
+            | grep -v '^HEAD$' | head -1 || true)"
+          echo "Branch for $SHA: ${branch:-unknown}"
+
+          case "$branch" in
+            "$BRANCH_PREFIX"*) ;;
+            *)
+              echo "Not a post-inbox branch; nothing to notify about."
+              echo "found=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          # The post added on this branch. Compare against the default branch
+          # rather than the previous commit: a branch may hold several commits
+          # once reply-to-append exists.
+          post="$(git diff --name-only --diff-filter=A "origin/${GITHUB_BASE_REF:-main}...$SHA" -- "$CONTENT_PATH/*.mdx" | head -1)"
+
+          if [ -z "$post" ]; then
+            echo "No new post on this branch; nothing to notify about."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # `authors: ['jenny']` -> jenny. Absent means the site default, which
+          # has no mapped address, so there is nobody to tell.
+          author="$(sed -n "s/^authors: *\[['\"]\([^'\"]*\)['\"].*/\1/p" "$post" | head -1)"
+          title="$(sed -n "s/^title: *['\"]\(.*\)['\"] *$/\1/p" "$post" | head -1)"
+
+          # The route is /blog/<slug>, and the slug is the filename. Linking
+          # the post directly rather than the preview's homepage matters: a new
+          # post is not necessarily on the front page, so a homepage link leaves
+          # the author hunting for their own writing.
+          slug="$(basename "$post" .mdx)"
+
+          # The pull request for this branch. `GET /pulls?head=owner:branch` is
+          # the lookup that works; `GET /commits/{sha}/pulls` returns nothing
+          # even for an open pull request, so do not reach for that one. Falls
+          # back to empty rather than failing — a missing link is better than a
+          # missing email.
+          pr_url="$(gh api \
+            "/repos/$GITHUB_REPOSITORY/pulls?head=${GITHUB_REPOSITORY%%/*}:$branch&state=all" \
+            --jq '.[0].html_url // empty' 2>/dev/null || true)"
+          echo "Pull request: ${pr_url:-not found}"
+
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "path=$post" >> "$GITHUB_OUTPUT"
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+          echo "author=$author" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+          echo "Post: $post (slug: $slug, author: ${author:-none})"
+
+      # This workflow's own repo, for the send script. A reusable workflow does
+      # not bring its repo's files along, so it has to be fetched explicitly.
+      - name: Fetch the shared scripts
+        if: steps.post.outputs.found == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ github.repository_owner }}/.github
+          # Repo-relative, and deliberately not `${{ runner.temp }}`: the
+          # `runner` context does not exist when the workflow is parsed, so
+          # referencing it here fails the whole run at startup with no logs and
+          # only "a workflow file issue" to go on.
+          path: shared
+          ref: main
+
+      - name: Send the notification
+        if: steps.post.outputs.found == 'true'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          AUTHOR_EMAIL_MAP: ${{ secrets.AUTHOR_EMAIL_MAP }}
+          MAIL_FROM: ${{ inputs.mail-from }}
+          AUTHOR: ${{ steps.post.outputs.author }}
+          TITLE: ${{ steps.post.outputs.title }}
+          POST_PATH: ${{ steps.post.outputs.path }}
+          POST_SLUG: ${{ steps.post.outputs.slug }}
+          ROUTE_PREFIX: ${{ inputs.route-prefix }}
+          PR_URL: ${{ steps.post.outputs.pr_url }}
+          PREVIEW_URL: ${{ github.event.deployment_status.environment_url }}
+          REF: ${{ github.event.deployment.sha }}
+        run: node shared/.github/scripts/notify-author.mjs
