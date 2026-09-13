@@ -87,6 +87,14 @@ jobs:
           SPELL_COUNT: ${{ steps.spell.outputs.count }}
           STYLE_COUNT: ${{ steps.style.outputs.count }}
         run: |
+          # Also to stdout: the job summary is not readable through the API or
+          # `gh run view`, so without this the only record of what was found is
+          # a web page. A run nobody can inspect from a terminal is a run that
+          # gets trusted without being read.
+          echo "Prose check: spelling=${SPELL_COUNT:-?} style=${STYLE_COUNT:-?} files=${FILE_COUNT:-?}"
+          if [ -s spell.txt ]; then echo "--- spelling ---"; head -50 spell.txt; fi
+          if [ -s style-findings.txt ]; then echo "--- style ---"; head -50 style-findings.txt; fi
+
           {
             echo "## Prose check (advisory)"
             echo
