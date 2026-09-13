@@ -56,7 +56,11 @@ if (!recipient) fail(`no address mapped for author "${AUTHOR}"`)
 // The specific pull request, resolved by the workflow. Falls back to the list
 // if that lookup came up empty — the author can still find their post there,
 // which beats omitting the link.
-const prUrl = PR_URL || `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pulls`
+// Require an actual URL rather than any non-empty string. A failed lookup once
+// put `gh`'s error JSON here, and an emptiness check passed it straight into the
+// email in place of the link.
+const looksLikeUrl = (value) => typeof value === 'string' && /^https:\/\/\S+$/.test(value)
+const prUrl = looksLikeUrl(PR_URL) ? PR_URL : `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pulls`
 
 // Link the post itself, not the preview's homepage. A new post is not
 // necessarily on the front page, so a bare preview link leaves the author

@@ -70,9 +70,23 @@ jobs:
           title="$(sed -n "s/^title: *['\"]\(.*\)['\"] *$/\1/p" "$post" | head -1)"
           slug="$(basename "$post" .mdx)"
 
-          pr_url="$(gh api \
+          # `gh api` writes its error JSON to STDOUT and exits non-zero. An
+          # earlier version used `|| true`, which swallowed the exit code and
+          # left the JSON in `pr_url` — a non-empty string, so every downstream
+          # emptiness check passed it through and the error body was emailed to
+          # the author in place of the link. Check the exit code, then require
+          # the value to actually look like a URL.
+          pr_url=""
+          if lookup="$(gh api \
             "/repos/$GITHUB_REPOSITORY/pulls?head=${GITHUB_REPOSITORY%%/*}:$branch&state=all" \
-            --jq '.[0].html_url // empty' 2>/dev/null || true)"
+            --jq '.[0].html_url // empty' 2>/dev/null)"; then
+            case "$lookup" in
+              https://*) pr_url="$lookup" ;;
+              *) echo "PR lookup returned something that is not a URL; ignoring it" ;;
+            esac
+          else
+            echo "PR lookup failed (often a missing pull-requests: read permission)"
+          fi
           echo "Pull request: ${pr_url:-not found}"
 
           echo "found=true" >> "$GITHUB_OUTPUT"
