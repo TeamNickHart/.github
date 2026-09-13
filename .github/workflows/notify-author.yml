@@ -20,13 +20,14 @@ on:
         required: true
       AUTHOR_EMAIL_MAP:
         required: true
-      # Passed explicitly by the caller. Declaring `pull-requests: read` in the
-      # caller *and* on this job was not enough — the implicit `github.token`
-      # inside a cross-repo reusable workflow did not carry the grant, and the
-      # pull request lookup returned 403. Taking the caller's token as a secret
-      # sidesteps the inheritance question entirely.
-      GH_TOKEN:
-        required: false
+
+# The pull request lookup below uses the implicit `github.token`, which is fine
+# — but the caller must grant `pull-requests: read` **on the job that calls this
+# workflow**, not at the top level of its file. A top-level grant does not reach
+# a `workflow_call` job, and the token then falls back to the repo default,
+# which does not include pull requests. Passing the caller's GITHUB_TOKEN down
+# as a secret does *not* work around a missing grant: it is the same token with
+# the same permissions.
 
 jobs:
   notify:
@@ -35,21 +36,18 @@ jobs:
       github.event.deployment.environment != 'Production'
     runs-on: ubuntu-latest
     steps:
-      # BISECT 2: the first checkout, and nothing else changed.
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.deployment.sha }}
           fetch-depth: 0
 
-      # BISECT 3: the post-finding step — brings GH_TOKEN, a gh api call, and the
-      # shell script. Nothing else changed.
       - name: Find the post and its author
         id: post
         env:
           SHA: ${{ github.event.deployment.sha }}
           CONTENT_PATH: ${{ inputs.content-path }}
           BRANCH_PREFIX: ${{ inputs.branch-prefix }}
-          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -92,7 +90,10 @@ jobs:
               *) echo "PR lookup returned something that is not a URL; ignoring it" ;;
             esac
           else
-            echo "PR lookup failed (often a missing pull-requests: read permission)"
+            echo "PR lookup failed. Check the GITHUB_TOKEN Permissions group above:"
+            echo "if PullRequests is absent, the calling job is missing"
+            echo "'permissions: pull-requests: read' (it must be on the job, not"
+            echo "at the top level of the caller's file)."
           fi
           echo "Pull request: ${pr_url:-not found}"
 
@@ -104,10 +105,9 @@ jobs:
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
           echo "Post: $post (slug: $slug, author: ${author:-none})"
 
-      # BISECT 4: the second checkout — the step that exists only because this is
-      # a reusable workflow, since a called workflow does not bring its own
-      # repo's files along. `path` is repo-relative; `runner.temp` cannot appear
-      # in a `with:` block because that context does not exist at parse time.
+      # A called workflow does not bring its own repo's files along, so fetch the
+      # shared scripts explicitly. `path` is repo-relative; `runner.temp` cannot
+      # appear in a `with:` block, as that context does not exist at parse time.
       - name: Fetch the shared scripts
         if: steps.post.outputs.found == 'true'
         uses: actions/checkout@v5
@@ -116,8 +116,6 @@ jobs:
           path: shared
           ref: main
 
-      # BISECT 5: the send step — the last candidate, and the cause by
-      # elimination since cycles 1-4 all loaded.
       - name: Send the notification
         if: steps.post.outputs.found == 'true'
         env:
