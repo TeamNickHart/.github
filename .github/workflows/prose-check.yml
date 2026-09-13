@@ -1,0 +1,126 @@
+# Advisory prose checks: spelling and markdown style, reported and never blocking.
+#
+# Deliberately advisory. Spellcheckers are false-positive-prone on prose full of
+# proper nouns, and markdown style is cosmetic — a blocking version would train
+# everyone to click past it. The MDX compile check is the blocking one, because a
+# post that does not compile genuinely breaks the site.
+#
+# Results go to the job summary rather than a pull request comment. The summary
+# needs no permissions at all; commenting needs `pull-requests: write`, which is
+# a real escalation on a token that could then modify pull requests.
+#
+# **Do not add this job to a ruleset's required checks.** It is designed to
+# succeed even when it finds something, so requiring it would be meaningless —
+# and if it were made to fail, it would block merges on a spelling opinion.
+name: Prose check
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        type: string
+        default: '24'
+      content-glob:
+        description: Files to check, relative to the repository root.
+        type: string
+        default: 'data/**/*.mdx'
+
+jobs:
+  prose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      # Pinned rather than floating: a spellchecker that changes its dictionary
+      # under you produces findings nobody changed anything to cause.
+      - name: Install the checkers
+        run: npm install --no-save --no-fund --no-audit cspell@8.19.4 markdownlint-cli2@0.14.0
+
+      # cspell silently skips files outside its working directory and reports
+      # "Files checked: 0" with a success exit — a spellchecker that passes
+      # everything. So count the files first and say so in the summary; a zero
+      # here means the glob is wrong, not that the prose is clean.
+      - name: Count the files to check
+        id: files
+        env:
+          CONTENT_GLOB: ${{ inputs.content-glob }}
+        run: |
+          set -euo pipefail
+          count="$(find . -path ./node_modules -prune -o -name '*.mdx' -print | wc -l | tr -d ' ')"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Found $count .mdx files (glob: $CONTENT_GLOB)"
+
+      - name: Spelling
+        id: spell
+        continue-on-error: true
+        env:
+          CONTENT_GLOB: ${{ inputs.content-glob }}
+        run: |
+          set +e
+          npx cspell --no-progress --no-summary --unique "$CONTENT_GLOB" > spell.txt 2>&1
+          echo "count=$(wc -l < spell.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Markdown style
+        id: style
+        continue-on-error: true
+        env:
+          CONTENT_GLOB: ${{ inputs.content-glob }}
+        run: |
+          set +e
+          npx markdownlint-cli2 "$CONTENT_GLOB" > style.txt 2>&1
+          grep -E 'MD[0-9]+/' style.txt > style-findings.txt
+          echo "count=$(wc -l < style-findings.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      # `always()` so the summary is written even if a step above misbehaves: a
+      # check whose output depends on its own success is a check you cannot read
+      # when it matters.
+      - name: Summarise
+        if: always()
+        env:
+          FILE_COUNT: ${{ steps.files.outputs.count }}
+          SPELL_COUNT: ${{ steps.spell.outputs.count }}
+          STYLE_COUNT: ${{ steps.style.outputs.count }}
+        run: |
+          {
+            echo "## Prose check (advisory)"
+            echo
+            echo "Nothing here blocks the merge. Fix what looks worth fixing."
+            echo
+            echo "| | Findings |"
+            echo "|---|---|"
+            echo "| Spelling | ${SPELL_COUNT:-?} |"
+            echo "| Markdown style | ${STYLE_COUNT:-?} |"
+            echo
+            if [ "${FILE_COUNT:-0}" = "0" ]; then
+              echo "> **No .mdx files were found.** That is a misconfigured glob, not clean prose."
+              echo
+            fi
+            if [ -s spell.txt ]; then
+              echo "<details><summary>Spelling</summary>"
+              echo
+              echo '```'
+              head -100 spell.txt
+              echo '```'
+              echo
+              echo "A word that is correct belongs in \`cspell.json\` under \`words\`."
+              echo
+              echo "</details>"
+              echo
+            fi
+            if [ -s style-findings.txt ]; then
+              echo "<details><summary>Markdown style</summary>"
+              echo
+              echo '```'
+              head -100 style-findings.txt
+              echo '```'
+              echo
+              echo "</details>"
+              echo
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
