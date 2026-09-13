@@ -95,7 +95,20 @@ jobs:
           path: shared
           ref: main
 
-      - name: Probe
-        run: |
-          echo "loaded and ran through the second checkout"
-          ls -la shared/.github/scripts/ 2>/dev/null || echo "(shared/ not present — step was skipped)"
+      # BISECT 5: the send step — the last candidate, and the cause by
+      # elimination since cycles 1-4 all loaded.
+      - name: Send the notification
+        if: steps.post.outputs.found == 'true'
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          AUTHOR_EMAIL_MAP: ${{ secrets.AUTHOR_EMAIL_MAP }}
+          MAIL_FROM: ${{ inputs.mail-from }}
+          AUTHOR: ${{ steps.post.outputs.author }}
+          TITLE: ${{ steps.post.outputs.title }}
+          POST_PATH: ${{ steps.post.outputs.path }}
+          POST_SLUG: ${{ steps.post.outputs.slug }}
+          ROUTE_PREFIX: ${{ inputs.route-prefix }}
+          PR_URL: ${{ steps.post.outputs.pr_url }}
+          PREVIEW_URL: ${{ github.event.deployment_status.environment_url }}
+          REF: ${{ github.event.deployment.sha }}
+        run: node shared/.github/scripts/notify-author.mjs
