@@ -22,7 +22,7 @@ on:
       node-version:
         description: Node version, matching what the site builds with on Vercel.
         type: string
-        default: '22'
+        default: '24'
 
 jobs:
   # Named `mdx` so the required-check context reads `mdx / mdx`.
@@ -31,6 +31,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Matches the Vercel projects, which all build on Node 24. If a site ever
+      # commits an `.nvmrc`, pass its version as the input rather than reading
+      # the file here — a conditional `node-version-file` means one of the two
+      # paths is never exercised.
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
