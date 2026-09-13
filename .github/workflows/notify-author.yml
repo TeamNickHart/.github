@@ -34,8 +34,54 @@ jobs:
           ref: ${{ github.event.deployment.sha }}
           fetch-depth: 0
 
-      - name: Probe
+      # BISECT 3: the post-finding step — brings GH_TOKEN, a gh api call, and the
+      # shell script. Nothing else changed.
+      - name: Find the post and its author
+        id: post
+        env:
+          SHA: ${{ github.event.deployment.sha }}
+          CONTENT_PATH: ${{ inputs.content-path }}
+          BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "loaded and ran with the first checkout"
-          echo "env=${{ github.event.deployment.environment }}"
-          git log --oneline -1
+          set -euo pipefail
+
+          branch="$(git branch -r --contains "$SHA" --format='%(refname:lstrip=3)' \
+            | grep -v '^HEAD$' | head -1 || true)"
+          echo "Branch for $SHA: ${branch:-unknown}"
+
+          case "$branch" in
+            "$BRANCH_PREFIX"*) ;;
+            *)
+              echo "Not a post-inbox branch; nothing to notify about."
+              echo "found=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
+          post="$(git diff --name-only --diff-filter=A "origin/${GITHUB_BASE_REF:-main}...$SHA" -- "$CONTENT_PATH/*.mdx" | head -1)"
+          if [ -z "$post" ]; then
+            echo "No new post on this branch; nothing to notify about."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          author="$(sed -n "s/^authors: *\[['\"]\([^'\"]*\)['\"].*/\1/p" "$post" | head -1)"
+          title="$(sed -n "s/^title: *['\"]\(.*\)['\"] *$/\1/p" "$post" | head -1)"
+          slug="$(basename "$post" .mdx)"
+
+          pr_url="$(gh api \
+            "/repos/$GITHUB_REPOSITORY/pulls?head=${GITHUB_REPOSITORY%%/*}:$branch&state=all" \
+            --jq '.[0].html_url // empty' 2>/dev/null || true)"
+          echo "Pull request: ${pr_url:-not found}"
+
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "path=$post" >> "$GITHUB_OUTPUT"
+          echo "slug=$slug" >> "$GITHUB_OUTPUT"
+          echo "author=$author" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "Post: $post (slug: $slug, author: ${author:-none})"
+
+      - name: Probe
+        run: echo "loaded and ran through the post-finding step"
