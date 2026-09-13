@@ -83,5 +83,19 @@ jobs:
           echo "pr_url=$pr_url" >> "$GITHUB_OUTPUT"
           echo "Post: $post (slug: $slug, author: ${author:-none})"
 
+      # BISECT 4: the second checkout — the step that exists only because this is
+      # a reusable workflow, since a called workflow does not bring its own
+      # repo's files along. `path` is repo-relative; `runner.temp` cannot appear
+      # in a `with:` block because that context does not exist at parse time.
+      - name: Fetch the shared scripts
+        if: steps.post.outputs.found == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ github.repository_owner }}/.github
+          path: shared
+          ref: main
+
       - name: Probe
-        run: echo "loaded and ran through the post-finding step"
+        run: |
+          echo "loaded and ran through the second checkout"
+          ls -la shared/.github/scripts/ 2>/dev/null || echo "(shared/ not present — step was skipped)"
