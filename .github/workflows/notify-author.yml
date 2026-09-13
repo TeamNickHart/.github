@@ -20,6 +20,13 @@ on:
         required: true
       AUTHOR_EMAIL_MAP:
         required: true
+      # Passed explicitly by the caller. Declaring `pull-requests: read` in the
+      # caller *and* on this job was not enough — the implicit `github.token`
+      # inside a cross-repo reusable workflow did not carry the grant, and the
+      # pull request lookup returned 403. Taking the caller's token as a secret
+      # sidesteps the inheritance question entirely.
+      GH_TOKEN:
+        required: false
 
 jobs:
   notify:
@@ -42,7 +49,7 @@ jobs:
           SHA: ${{ github.event.deployment.sha }}
           CONTENT_PATH: ${{ inputs.content-path }}
           BRANCH_PREFIX: ${{ inputs.branch-prefix }}
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
         run: |
           set -euo pipefail
 
