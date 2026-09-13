@@ -1,0 +1,69 @@
+# Compile every post and fail the pull request if any MDX is invalid.
+#
+# This runs the site's *own* `contentlayer2 build`, deliberately, rather than
+# compiling with a plugin list maintained here. The sites carry a substantial
+# remark/rehype stack (gfm, math, katex, citation, prism, pliny's imgToJsx,
+# github-blockquote-alert, preset-minify), and a copy of that list here would
+# drift from whatever the sites actually build with — a check that disagrees with
+# the real build is worse than no check, in both directions.
+#
+# Verified before being written: on a post containing `<https://example.com>`,
+# `contentlayer2 build` exits 1 and names the file and the offending character.
+# On the real content it exits 0. It needs no environment variables, and writes
+# only to `.contentlayer`, which every site gitignores.
+#
+# Not `next build`: that also needs env vars and Vercel-specific config, so it
+# would fail for reasons unrelated to the post and train everyone to ignore it.
+name: MDX check
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node version, matching what the site builds with on Vercel.
+        type: string
+        default: '22'
+
+jobs:
+  # Named `mdx` so the required-check context reads `mdx / mdx`.
+  mdx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+
+      # All three sites are yarn 3 with a vendored release in `.yarn/releases`
+      # and `nodeLinker: node-modules`, so corepack plus `--immutable` installs
+      # exactly what the lockfile pins and fails if the lockfile is stale.
+      - name: Install
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      # Compiles every document, not only the changed ones. A post can break
+      # because of something it references (a citation, an image), so the whole
+      # set is the honest unit — and it takes seconds for a personal blog.
+      - name: Compile the posts
+        run: yarn contentlayer2 build
+
+      - name: Explain a failure
+        if: failure()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'NOTE'
+          ## MDX did not compile
+
+          One or more posts failed to compile, so the site would not build. The
+          log above names the file and the position.
+
+          The usual cause is that **MDX is not plain markdown**: `<` starts a JSX
+          tag and `{` starts a JavaScript expression. So a bare autolink like
+          `<https://example.com>` is a syntax error — write `[text](url)`
+          instead — and a stray `<` or `{` in prose needs escaping as `\<` or
+          `\{`.
+
+          Posts that arrive through post-inbox are escaped automatically; a post
+          written in the GitHub web editor or pushed directly is not.
+          NOTE
