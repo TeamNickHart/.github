@@ -28,9 +28,14 @@ jobs:
       github.event.deployment.environment != 'Production'
     runs-on: ubuntu-latest
     steps:
-      # BISECT 1 (baseline): re-establish in weishart-site the shape that loaded
-      # in jennyweis-blog. No checkout, no other steps — one variable at a time.
+      # BISECT 2: the first checkout, and nothing else changed.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.deployment.sha }}
+          fetch-depth: 0
+
       - name: Probe
         run: |
-          echo "baseline loaded and ran"
+          echo "loaded and ran with the first checkout"
           echo "env=${{ github.event.deployment.environment }}"
+          git log --oneline -1
