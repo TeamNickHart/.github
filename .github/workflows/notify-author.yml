@@ -15,6 +15,15 @@ on:
       mail-from:
         type: string
         required: true
+      shared-ref:
+        description: >
+          The ref of this repo to take the notification script from. Pass the
+          same ref the caller pinned this workflow to — `v1` for
+          `notify-author.yml@v1` — so the workflow and the script it runs move
+          together. Defaults to `main`, which means the script is whatever is
+          newest rather than what the pin says.
+        type: string
+        default: main
     secrets:
       RESEND_API_KEY:
         required: true
@@ -108,25 +117,36 @@ jobs:
       # A called workflow does not bring its own repo's files along, so fetch the
       # shared scripts explicitly. `path` is repo-relative; `runner.temp` cannot
       # appear in a `with:` block, as that context does not exist at parse time.
+      #
+      # `ref` is an input with no default on purpose. There is **no context that
+      # gives a called workflow its own commit**, which was established by
+      # printing all the candidates in a real run:
+      #
+      #   github.job_workflow_sha   does not exist; resolves to ""
+      #   github.workflow_sha       the *caller's* commit, absent from this repo
+      #   github.workflow_ref       the *caller's* repo and ref
+      #
+      # GitHub does know it — the log's `Uses:` line and the run's
+      # `referenced_workflows` both carry it — but it is not reachable from an
+      # expression, and fetching it would mean an API call to learn our own
+      # version.
+      #
+      # So the caller passes the same ref it pinned this workflow to, and
+      # workflow and script then move together. A caller that omits it gets
+      # `main`, which is the old behaviour and the reason the pin was
+      # decorative: a caller on @v1 still ran whatever script was newest.
       - name: Fetch the shared scripts
         if: steps.post.outputs.found == 'true'
         uses: actions/checkout@v5
         with:
           repository: ${{ github.repository_owner }}/.github
           path: shared
-          # The commit this workflow file itself was resolved from, so the script
-          # cannot drift from the workflow that runs it. `ref: main` meant a
-          # caller pinned to a tag still pulled the newest script, defeating the
-          # point of pinning. `job_workflow_sha` is the *called* workflow's
-          # commit; `workflow_sha` is the caller's, which does not exist here.
-          ref: ${{ github.job_workflow_sha }}
+          ref: ${{ inputs.shared-ref }}
 
       - name: Send the notification
         if: steps.post.outputs.found == 'true'
         env:
-          JOB_WORKFLOW_SHA: ${{ github.job_workflow_sha }}
-          DIAG_WORKFLOW_SHA: ${{ github.workflow_sha }}
-          DIAG_WORKFLOW_REF: ${{ github.workflow_ref }}
+          SHARED_REF: ${{ inputs.shared-ref }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           AUTHOR_EMAIL_MAP: ${{ secrets.AUTHOR_EMAIL_MAP }}
           MAIL_FROM: ${{ inputs.mail-from }}
@@ -139,9 +159,7 @@ jobs:
           PREVIEW_URL: ${{ github.event.deployment_status.environment_url }}
           REF: ${{ github.event.deployment.sha }}
         run: |
-          echo "Shared script pinned to: ${JOB_WORKFLOW_SHA:-<empty>}"
-          echo "  github.workflow_sha: ${DIAG_WORKFLOW_SHA:-<empty>}"
-          echo "  github.workflow_ref: ${DIAG_WORKFLOW_REF:-<empty>}"
+          echo "Shared script taken from ${SHARED_REF} of this repo"
           test -f shared/.github/scripts/notify-author.mjs \
             || { echo "Shared script missing — the pinned ref did not resolve."; exit 1; }
           node shared/.github/scripts/notify-author.mjs

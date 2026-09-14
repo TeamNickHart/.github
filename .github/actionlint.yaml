@@ -1,0 +1,13 @@
+# actionlint configuration.
+#
+# Only style-level shellcheck rules are suppressed here, and each needs a
+# reason. Anything that could be a real bug stays on — the whole point of
+# running this is that it caught `github.job_workflow_sha` resolving to an
+# empty string in production.
+paths:
+  .github/workflows/**:
+    ignore:
+      # SC2129: "consider using { cmd1; cmd2; } >> file". The individual
+      # redirects are writing to $GITHUB_OUTPUT one value per line, which reads
+      # better as separate statements than wrapped in a block.
+      - 'shellcheck reported issue in this script: SC2129'
