@@ -125,6 +125,8 @@ jobs:
         if: steps.post.outputs.found == 'true'
         env:
           JOB_WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+          DIAG_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          DIAG_WORKFLOW_REF: ${{ github.workflow_ref }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           AUTHOR_EMAIL_MAP: ${{ secrets.AUTHOR_EMAIL_MAP }}
           MAIL_FROM: ${{ inputs.mail-from }}
@@ -138,6 +140,8 @@ jobs:
           REF: ${{ github.event.deployment.sha }}
         run: |
           echo "Shared script pinned to: ${JOB_WORKFLOW_SHA:-<empty>}"
+          echo "  github.workflow_sha: ${DIAG_WORKFLOW_SHA:-<empty>}"
+          echo "  github.workflow_ref: ${DIAG_WORKFLOW_REF:-<empty>}"
           test -f shared/.github/scripts/notify-author.mjs \
             || { echo "Shared script missing — the pinned ref did not resolve."; exit 1; }
           node shared/.github/scripts/notify-author.mjs
