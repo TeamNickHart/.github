@@ -1,0 +1,111 @@
+# Validate the shared workflows before they reach three sites at once.
+#
+# This repo has no tests to run and nothing to build — it is workflows and one
+# script. But a mistake here is worse than a mistake in any single site: every
+# site calls these, so a bad change breaks all three, and the failure arrives as
+# GitHub's `startup_failure` with no logs and nothing on the annotations
+# endpoint. Finding one of those cost a five-cycle bisection once already.
+#
+# So the checks here are about the failure modes that actually happened.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  # Named `ci` so the required-check context is `ci`, matching post-inbox. A
+  # reusable workflow's context would be `caller / called`; this job is inline,
+  # so it is the bare job id.
+  ci:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      # actionlint validates expressions against the real context types and runs
+      # shellcheck over every `run:` block. Both have earned their place:
+      #
+      #  - it flagged `github.job_workflow_sha` as undefined, which five
+      #    production runs then confirmed resolves to an empty string — a pin
+      #    that was not pinning anything
+      #  - the worst bugs in these workflows have been shell, not YAML: a
+      #    `|| true` that swallowed an exit code and emailed an error body as a
+      #    link, and a heredoc that fed only its first line to the interpreter
+      #
+      # What it does NOT catch, so nobody assumes otherwise: semantic
+      # `workflow_call` rules. `vars.X` unavailable in a called workflow, and
+      # `runner.temp` in a `with:` block, both pass actionlint cleanly and both
+      # cost a bisection cycle.
+      - name: Lint the workflows
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: -color
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # The script is fetched and executed by the notify workflow at runtime, so
+      # a syntax error in it surfaces as a failed notification rather than
+      # anything resembling a parse error.
+      - name: Check the shared script parses
+        run: node --check .github/scripts/notify-author.mjs
+
+      # A `workflow_call` input or secret that is used but never declared is
+      # accepted at parse time and arrives empty at runtime — the same silent
+      # class as the pin bug, so it is worth failing on rather than discovering
+      # in a live notification.
+      - name: Check every workflow_call input and secret is declared
+        run: |
+          set -euo pipefail
+          status=0
+          for file in .github/workflows/*.yml; do
+            # Only reusable workflows have inputs to declare. Anchored, so a
+            # `workflow_call` mentioned in a comment does not count.
+            grep -qE '^  workflow_call:' "$file" || continue
+
+            declared="$(sed -n '/^  workflow_call:/,/^jobs:/p' "$file" \
+              | grep -oE '^      [a-zA-Z][a-zA-Z0-9_-]*:' \
+              | tr -d ' :' | sort -u)"
+
+            used="$(grep -oE '(inputs|secrets)\.[a-zA-Z][a-zA-Z0-9_-]*' "$file" \
+              | cut -d. -f2 | sort -u)"
+
+            for name in $used; do
+              if ! printf '%s\n' "$declared" | grep -qx "$name"; then
+                echo "$file: uses \`$name\` but never declares it under workflow_call"
+                status=1
+              fi
+            done
+          done
+          if [ "$status" -eq 0 ]; then
+            echo "Every input and secret in use is declared."
+          fi
+          exit "$status"
+
+      - name: Explain a failure
+        if: failure()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'NOTE'
+          ## Shared workflow validation failed
+
+          These workflows are called by every site, so a bad change here breaks
+          all of them at once — and a workflow that fails to load reports only
+          `startup_failure`, with no logs to read.
+
+          Reproduce locally:
+
+          ```
+          brew install actionlint          # or see rhysd/actionlint releases
+          actionlint
+          node --check .github/scripts/notify-author.mjs
+          ```
+
+          **What this does not check:** whether a context is actually populated
+          inside a called workflow. `vars.X` is unavailable there, and
+          `github.job_workflow_sha` does not exist at all — both pass linting
+          and arrive empty at runtime. Print a value before depending on it.
+          NOTE
