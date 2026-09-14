@@ -131,4 +131,33 @@ jobs:
               echo "</details>"
               echo
             fi
+            # MD025 is the one style rule left enabled, so it is worth
+            # explaining rather than leaving as markdownlint's generic wording.
+            # The cause is never obvious from the message: the layout renders
+            # the frontmatter title as the page's H1, so a body `# Heading`
+            # silently makes a second one.
+            if grep -q 'MD025' style-findings.txt 2>/dev/null; then
+              echo "### About the \`MD025\` finding"
+              echo
+              echo "This post has **two top-level headings**, and the second one"
+              echo "is easy to add by accident."
+              echo
+              echo "The site's layout already renders the \`title:\` from your"
+              echo "frontmatter as the page's \`<h1>\`. So a \`# Heading\` at the"
+              echo "top of the body adds a *second* one — which screen readers"
+              echo "announce as two document titles, and search engines treat as"
+              echo "competing headings."
+              echo
+              echo "Usually one of these is what you want:"
+              echo
+              echo "- **Delete the body heading.** The page already has a title."
+              echo "- **Make it \`##\`** if it genuinely introduces a section"
+              echo "  rather than restating the title."
+              echo "- **Put the better wording in \`title:\`** and delete the body"
+              echo "  heading, if you prefer how the body one reads."
+              echo
+              echo "Headings inside code fences are not counted, so a \`#\` shell"
+              echo "comment in an example is fine."
+              echo
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
